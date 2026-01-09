@@ -36,8 +36,18 @@ variable "proxmox_storage" {
 }
 
 variable "bridge_wan" {
-  type = string
-  default = env("PACKER_BRIDGE_WAN")
+  type    = string
+  default = env("PACKER_BRIDGE_WAN") != "" ? env("PACKER_BRIDGE_WAN") : "vmbr0"
+}
+
+variable "bridge_lan" {
+  type    = string
+  default = env("PACKER_BRIDGE_LAN") != "" ? env("PACKER_BRIDGE_LAN") : "nonet"
+}
+
+variable "lan_vlan_tag" {
+  type    = number
+  default = 0
 }
 
 variable "ssh_public_key" {
@@ -90,4 +100,9 @@ variable "kali_iso_url" {
 variable "kali_iso_checksum" {
   type    = string
   default = "none"
+}
+
+variable "task_timeout" {
+  type    = string
+  default = "2h"
 }

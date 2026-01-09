@@ -16,6 +16,8 @@ source "proxmox-iso" "kali-xfce" {
   insecure_skip_tls_verify = var.proxmox_skip_tls_verify
   node                     = var.proxmox_node
 
+  task_timeout = var.task_timeout
+
   # VM general
   vm_id                = var.template_vm_id
   vm_name              = var.template_name
@@ -23,11 +25,12 @@ source "proxmox-iso" "kali-xfce" {
   os                   = "l26"
 
   boot_iso {
-    type = "ide"
+    type = "scsi"
 
     iso_url          = var.kali_iso_url
     iso_checksum     = var.kali_iso_checksum
     iso_storage_pool = var.iso_storage
+    iso_download_pve = true
     unmount          = true
   }
 
@@ -52,6 +55,13 @@ source "proxmox-iso" "kali-xfce" {
     firewall = false
   }
 
+  network_adapters {
+    model    = "virtio"
+    bridge   = var.bridge_lan
+    firewall = false
+    vlan_tag = var.lan_vlan_tag
+  }
+
   vga {
     type   = "std"
     memory = 64
@@ -61,20 +71,20 @@ source "proxmox-iso" "kali-xfce" {
   cloud_init              = true
   cloud_init_storage_pool = var.proxmox_storage
 
-boot_command = [
-  "<esc><wait>",
-  "<esc><wait>",
-  "<esc><wait>",
+  boot_command = [
+    "<esc><wait>",
+    "<esc><wait>",
+    "<esc><wait>",
 
-  "install auto=true priority=critical desktop=xfce debconf/frontend=noninteractive " ,
-  "preseed/url=http://{{ .HTTPIP }}:{{ .HTTPPort }}/cloud.cfg " ,
-  "debian-installer/locale=en_US.UTF-8 locale=en_US.UTF-8 " ,
-  "keyboard-configuration/xkb-keymap=us console-keymaps-at/keymap=us " ,
-  "netcfg/choose_interface=auto netcfg/get_hostname=kali netcfg/get_domain=local " ,
-  "fb=false console-setup/ask_detect=false <wait>",
+    "install auto=true priority=critical desktop=xfce debconf/frontend=noninteractive ",
+    "preseed/url=http://{{ .HTTPIP }}:{{ .HTTPPort }}/cloud.cfg ",
+    "debian-installer/locale=en_US.UTF-8 locale=en_US.UTF-8 ",
+    "keyboard-configuration/xkb-keymap=us console-keymaps-at/keymap=us ",
+    "netcfg/choose_interface=auto netcfg/get_hostname=kali netcfg/get_domain=local ",
+    "fb=false console-setup/ask_detect=false <wait>",
 
-  "<enter><wait>"
-]
+    "<enter><wait>"
+  ]
   boot      = "c"
   boot_wait = "5s"
 
