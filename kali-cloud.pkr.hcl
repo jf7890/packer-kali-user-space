@@ -45,7 +45,6 @@ boot_iso {
   memory             = var.memory
   ballooning_minimum = var.ballooning_minimum
 
-  # Network: 2 NICs (WAN for build/install; LAN for lab)
   network_adapters {
     model    = "virtio"
     bridge   = var.bridge_wan
