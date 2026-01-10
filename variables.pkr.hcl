@@ -3,19 +3,23 @@
 
 variable "proxmox_url" {
   type = string
+  default = env("PROXMOX_URL")
 }
 
 variable "proxmox_username" {
   type = string
+  default = env("PROXMOX_USERNAME")
 }
 
 variable "proxmox_token" {
   type      = string
   sensitive = true
+  default = env("PROXMOX_TOKEN")
 }
 
 variable "proxmox_node" {
   type = string
+  default = env("PROXMOX_NODE")
 }
 
 variable "proxmox_skip_tls_verify" {
@@ -25,6 +29,7 @@ variable "proxmox_skip_tls_verify" {
 
 variable "iso_storage" {
   type = string
+  default = env("PACKER_ISO_STORAGE")
 }
 
 variable "vm_storage" {
@@ -35,14 +40,9 @@ variable "proxmox_storage" {
   type = string
 }
 
-variable "bridge_wan" {
-  type    = string
-  default = env("PACKER_BRIDGE_WAN") != "" ? env("PACKER_BRIDGE_WAN") : "vmbr0"
-}
-
 variable "bridge_lan" {
   type    = string
-  default = env("PACKER_BRIDGE_LAN") != "" ? env("PACKER_BRIDGE_LAN") : "nonet"
+  default = env("PACKER_BRIDGE_LAN")
 }
 
 variable "lan_vlan_tag" {
