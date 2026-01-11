@@ -15,17 +15,40 @@ USERSTACK_SRC="/tmp/capstone-userstack"
 USERSTACK_DST="/opt/capstone-userstack"
 
 echo "[1/8] Apt update + base packages"
+apt-get update -y
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release jq \
   qemu-guest-agent \
   docker.io \
   unzip
 
+COMPOSE_BIN=""
+COMPOSE_ARGS=""
 if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
-  apt-get install -y docker-compose-plugin
-else
-  apt-get install -y docker-compose
+  if apt-get install -y docker-compose-plugin; then
+    COMPOSE_BIN="/usr/bin/docker"
+    COMPOSE_ARGS="compose"
+  fi
 fi
+if [[ -z "$COMPOSE_BIN" ]] && apt-cache show docker-compose >/dev/null 2>&1; then
+  if apt-get install -y docker-compose; then
+    COMPOSE_BIN="/usr/bin/docker-compose"
+  fi
+fi
+if [[ -z "$COMPOSE_BIN" ]]; then
+  echo "ERROR: No docker compose package available in apt repos." >&2
+  exit 1
+fi
+
+if [[ -n "$COMPOSE_ARGS" ]]; then
+  COMPOSE_CMD=("$COMPOSE_BIN" "$COMPOSE_ARGS")
+else
+  COMPOSE_CMD=("$COMPOSE_BIN")
+fi
+
+SYSTEMD_COMPOSE_CMD="${COMPOSE_CMD[*]}"
+SYSTEMD_COMPOSE_START="${SYSTEMD_COMPOSE_CMD} up -d"
+SYSTEMD_COMPOSE_STOP="${SYSTEMD_COMPOSE_CMD} down"
 
 # Start services in a non-blocking way to avoid long-running SSH sessions.
 systemctl enable qemu-guest-agent > /dev/null 2>&1 || true
@@ -41,12 +64,16 @@ fi
 
 echo "[2/8] Install Wazuh agent (optional; does not start until manager is set)"
 # Wazuh provides a Debian/Ubuntu repo that also works for Kali (Debian-based).
-# If external downloads are blocked, you can comment out this entire section.
+# If external downloads are blocked, the install is skipped.
 if ! dpkg -s wazuh-agent >/dev/null 2>&1; then
-  curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
-  echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list
-  apt-get update -y
-  apt-get install -y wazuh-agent
+  if curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list \
+    && apt-get update -y \
+    && apt-get install -y wazuh-agent; then
+    echo "Wazuh agent installed."
+  else
+    echo "Wazuh install failed; continuing without it." >&2
+  fi
 fi
 
 # Keep the agent disabled by default; the manager address will be configured later.
@@ -57,8 +84,12 @@ if [[ -f "$WAZUH_CONF" ]]; then
 
   # Add logcollector entries only once
   if ! grep -q "CAPSTONE_USERSTACK_LOGS" "$WAZUH_CONF"; then
-    # Insert before closing tag
-    perl -0777 -i -pe 's#</ossec_config>#  <!-- CAPSTONE_USERSTACK_LOGS -->\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/nginx/access.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/nginx/error.log</location>\n  </localfile>\n  <localfile>\n    <log_format>json</log_format>\n    <location>/opt/capstone-userstack/logs/modsecurity/modsec_audit.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/apache/access.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/apache/error.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/mysql/error.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/postgres/postgresql.log</location>\n  </localfile>\n</ossec_config>#s' "$WAZUH_CONF" || true
+    # Insert before closing tag (skip if perl is unavailable)
+    if command -v perl >/dev/null 2>&1; then
+      perl -0777 -i -pe 's#</ossec_config>#  <!-- CAPSTONE_USERSTACK_LOGS -->\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/nginx/access.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/nginx/error.log</location>\n  </localfile>\n  <localfile>\n    <log_format>json</log_format>\n    <location>/opt/capstone-userstack/logs/modsecurity/modsec_audit.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/apache/access.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/apache/error.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/mysql/error.log</location>\n  </localfile>\n  <localfile>\n    <log_format>syslog</log_format>\n    <location>/opt/capstone-userstack/logs/postgres/postgresql.log</location>\n  </localfile>\n</ossec_config>#s' "$WAZUH_CONF" || true
+    else
+      echo "perl not available; skipping Wazuh logcollector insertion." >&2
+    fi
   fi
 fi
 
@@ -96,7 +127,11 @@ chmod +x /usr/local/bin/wazuh-set-manager
 echo "[4/8] Install capstone userstack files"
 rm -rf "$USERSTACK_DST"
 mkdir -p "$USERSTACK_DST"
-cp -a "$USERSTACK_SRC"/* "$USERSTACK_DST"/
+if compgen -G "$USERSTACK_SRC/*" >/dev/null; then
+  cp -a "$USERSTACK_SRC"/* "$USERSTACK_DST"/
+else
+  echo "WARNING: No userstack files found in $USERSTACK_SRC" >&2
+fi
 
 # Ensure log directories exist
 mkdir -p \
@@ -115,7 +150,7 @@ fi
 chmod +x "$USERSTACK_DST/scripts"/*.sh 2>/dev/null || true
 
 echo "[5/8] Create systemd service: capstone-userstack"
-cat > /etc/systemd/system/capstone-userstack.service <<'EOF'
+cat > /etc/systemd/system/capstone-userstack.service <<EOF
 [Unit]
 Description=Capstone user lab stack (DVWA + JuiceShop + nginx-love)
 Wants=network-online.target docker.service
@@ -125,8 +160,8 @@ After=network-online.target docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/capstone-userstack
-ExecStart=/usr/bin/docker compose up -d
-ExecStop=/usr/bin/docker compose down
+ExecStart=${SYSTEMD_COMPOSE_START}
+ExecStop=${SYSTEMD_COMPOSE_STOP}
 TimeoutStartSec=0
 
 [Install]
@@ -140,8 +175,8 @@ echo "[6/8] Pre-pull/build docker images (best-effort)"
 # Avoid failing the whole template build if a registry is down.
 (
   cd "$USERSTACK_DST"
-  docker compose pull || true
-  docker compose build --pull || true
+  "${COMPOSE_CMD[@]}" pull || true
+  "${COMPOSE_CMD[@]}" build --pull || true
 ) || true
 
 # Do not start the lab automatically during the template build
@@ -181,4 +216,4 @@ rm -rf /var/lib/apt/lists/* 2>/dev/null || true
 
 sync || true
 
-echo "DONE: Template has docker + userstack + wazuh-agent (disabled until manager is set)." 
+echo "DONE: Template has docker + userstack + wazuh-agent (disabled until manager is set)."
