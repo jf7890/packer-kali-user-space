@@ -54,6 +54,7 @@ prepare_only() {
   chmod +x /opt/capstone-scripts/*.sh 2>/dev/null || true
 
   if [[ -f "$pve_cfg" ]]; then
+    mkdir -p /etc/cloud/cloud.cfg.d 2>/dev/null || true
     cp "$pve_cfg" /etc/cloud/cloud.cfg.d/99-pve.cfg
   fi
 
@@ -136,6 +137,30 @@ USERSTACK_SRC="/opt/capstone-userstack-src"
 USERSTACK_DST="/opt/capstone-userstack"
 WAZUH_MANAGER="${WAZUH_MANAGER:-172.16.99.11}"
 
+KALI_SHADOW_HASH=""
+if id kali >/dev/null 2>&1; then
+  KALI_SHADOW_HASH="$(getent shadow kali 2>/dev/null | cut -d: -f2 || true)"
+  if [[ -n "$KALI_SHADOW_HASH" ]]; then
+    install -d -m 0700 /var/lib/capstone-userstack
+    printf '%s' "$KALI_SHADOW_HASH" > /var/lib/capstone-userstack/kali.shadow.hash
+    chmod 0600 /var/lib/capstone-userstack/kali.shadow.hash
+  fi
+fi
+
+# Cloud-init can lock the default user when no password is provided via metadata.
+# Write our defaults early so they're present even if cloud-init services start during package install.
+mkdir -p /etc/cloud/cloud.cfg.d
+cat > /etc/cloud/cloud.cfg.d/99-capstone-login.cfg <<'EOF'
+#cloud-config
+system_info:
+  default_user:
+    name: kali
+    lock_passwd: false
+chpasswd:
+  expire: false
+ssh_pwauth: false
+EOF
+
 echo "[1/10] Configure apt sources"
 cat > /etc/apt/sources.list <<'EOF'
 deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
@@ -154,6 +179,83 @@ apt-get install -y --no-install-recommends \
 # Optional tools (best-effort)
 apt-get install -y --no-install-recommends docker-compose-plugin || true
 apt-get install -y --no-install-recommends kali-tools-web || true
+
+echo "[2/10] Cloud-init defaults (preserve local login)"
+if command -v cloud-init >/dev/null 2>&1; then
+  mkdir -p /etc/cloud/cloud.cfg.d
+  cat > /etc/cloud/cloud.cfg.d/99-capstone-login.cfg <<'EOF'
+#cloud-config
+system_info:
+  default_user:
+    name: kali
+    lock_passwd: false
+chpasswd:
+  expire: false
+ssh_pwauth: false
+EOF
+fi
+
+# If cloud-init (or other tooling) locked the account, unlock it so console login works.
+if id kali >/dev/null 2>&1; then
+  # Restore the original shadow hash if cloud-init locked/overwrote it during install.
+  if [[ -n "$KALI_SHADOW_HASH" ]]; then
+    current_hash="$(getent shadow kali 2>/dev/null | cut -d: -f2 || true)"
+    if [[ "$current_hash" != "$KALI_SHADOW_HASH" ]]; then
+      usermod -p "$KALI_SHADOW_HASH" kali >/dev/null 2>&1 || true
+    fi
+  fi
+  passwd -u kali >/dev/null 2>&1 || true
+fi
+
+echo "[2/10] Ensure kali login survives reboots"
+cat > /usr/local/bin/capstone-ensure-kali-login <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! id kali >/dev/null 2>&1; then
+  exit 0
+fi
+
+shadow_field="$(getent shadow kali 2>/dev/null | cut -d: -f2 || true)"
+if [[ -z "$shadow_field" ]]; then
+  exit 0
+fi
+
+# If cloud-init locks via "!<hash>", unlock while preserving the hash.
+if [[ "$shadow_field" == '!$'* ]]; then
+  passwd -u kali >/dev/null 2>&1 || true
+  exit 0
+fi
+
+# If cloud-init replaced the hash entirely, restore from our saved hash (if present).
+if [[ "$shadow_field" == '!'* || "$shadow_field" == '*'* ]]; then
+  saved="/var/lib/capstone-userstack/kali.shadow.hash"
+  if [[ -f "$saved" ]]; then
+    saved_hash="$(cat "$saved" 2>/dev/null || true)"
+    if [[ "$saved_hash" == '$'* ]]; then
+      usermod -p "$saved_hash" kali >/dev/null 2>&1 || true
+      passwd -u kali >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+EOF
+chmod +x /usr/local/bin/capstone-ensure-kali-login
+
+cat > /etc/systemd/system/capstone-ensure-kali-login.service <<'EOF'
+[Unit]
+Description=Ensure kali account remains loginable (cloud-init safe-guard)
+After=cloud-final.service
+Wants=cloud-final.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/capstone-ensure-kali-login
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload > /dev/null 2>&1 || true
+systemctl enable capstone-ensure-kali-login.service > /dev/null 2>&1 || true
 
 resolve_compose_cmd() {
   local docker_bin docker_compose_bin

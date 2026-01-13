@@ -33,6 +33,13 @@ build {
     ]
     inline = [
       "chmod +x /tmp/capstone-scripts/provision-kali-userstack.sh",
+      # Pre-provision during template build so clones don't download on first boot.
+      "sudo mkdir -p /opt/capstone-userstack-src /opt/capstone-scripts",
+      "sudo cp -a /tmp/capstone-userstack-src/. /opt/capstone-userstack-src/",
+      "sudo cp -a /tmp/capstone-scripts/. /opt/capstone-scripts/",
+      "sudo chmod +x /opt/capstone-scripts/*.sh",
+      "sudo -E /opt/capstone-scripts/provision-kali-userstack.sh",
+      # Finalize template (SSH hardening + generalization).
       "sudo -E /tmp/capstone-scripts/provision-kali-userstack.sh --prepare"
     ]
   }
