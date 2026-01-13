@@ -16,8 +16,12 @@ autoinstall:
     users:
       - name: kali
         groups: [adm, sudo]
-        #lock-passwd: false
+        lock-passwd: false
         sudo: ALL=(ALL) NOPASSWD:ALL
+    chpasswd:
+      list: |
+        kali:kali
+      expire: false
 #  runcmd:
 #    - sudo apt install curl -y
 #    - sudo sudo curl -fsSL 'https://tailscale.com/install.sh' | sh
