@@ -74,10 +74,14 @@ TimeoutStartSec=0
 
 [Install]
 WantedBy=multi-user.target
-EOF
+  EOF
 
   systemctl daemon-reload > /dev/null 2>&1 || true
-  systemctl enable capstone-firstboot.service > /dev/null 2>&1 || true
+  if [[ ! -f /var/lib/capstone-userstack/provisioned ]]; then
+    systemctl enable capstone-firstboot.service > /dev/null 2>&1 || true
+  else
+    systemctl disable capstone-firstboot.service > /dev/null 2>&1 || true
+  fi
 
   if [[ -z "$ssh_pub" ]]; then
     echo "ERROR: PACKER_SSH_PUBLIC_KEY is required for key-only SSH." >&2
@@ -104,6 +108,18 @@ EOF
 
   echo "[PREPARE] SSH hardening staged (applies on next boot)."
 
+  # Restore safer sudo defaults (Packer uses NOPASSWD during build only).
+  if id kali >/dev/null 2>&1; then
+    usermod -aG sudo kali >/dev/null 2>&1 || true
+  fi
+  if [[ -f /etc/sudoers.d/kali ]]; then
+    cat > /etc/sudoers.d/kali <<'EOF'
+kali ALL=(ALL:ALL) ALL
+EOF
+    chmod 440 /etc/sudoers.d/kali
+    chown root:root /etc/sudoers.d/kali
+  fi
+
   rm -rf "$prepare_userstack_src" "$prepare_scripts_src" 2>/dev/null || true
   rm -f /root/.ssh/authorized_keys 2>/dev/null || true
   rm -f /etc/ssh/ssh_host_* 2>/dev/null || true
@@ -112,6 +128,9 @@ EOF
   find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
   rm -f /root/.bash_history /home/kali/.bash_history 2>/dev/null || true
   rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+  if command -v cloud-init >/dev/null 2>&1; then
+    cloud-init clean --logs > /dev/null 2>&1 || true
+  fi
   sync || true
 
   echo "[PREPARE] Done."
@@ -172,12 +191,122 @@ apt-get update -y
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg lsb-release jq unzip \
   qemu-guest-agent \
-  docker.io \
   cloud-init \
   tigervnc-standalone-server dbus-x11
 
+resolve_docker_bin() {
+  local docker_bin
+  docker_bin="$(type -P docker 2>/dev/null || true)"
+  if [[ -z "$docker_bin" ]]; then
+    docker_bin="$(command -v docker 2>/dev/null || true)"
+  fi
+  if [[ -z "$docker_bin" ]]; then
+    for candidate in /usr/bin/docker /usr/local/bin/docker /bin/docker; do
+      if [[ -x "$candidate" ]]; then
+        docker_bin="$candidate"
+        break
+      fi
+    done
+  fi
+  printf '%s' "$docker_bin"
+}
+
+select_docker_repo_codename() {
+  local detected candidates=() seen chosen
+  detected="$(
+    . /etc/os-release
+    printf '%s\n%s\n' "${DEBIAN_CODENAME:-}" "${VERSION_CODENAME:-}"
+  )"
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    [[ "$c" == kali-* ]] && continue
+    candidates+=("$c")
+  done <<<"$detected"
+
+  candidates+=("bookworm" "bullseye")
+
+  chosen=""
+  for c in "${candidates[@]}"; do
+    if [[ -n "${seen:-}" ]] && [[ ",${seen}," == *",${c},"* ]]; then
+      continue
+    fi
+    seen="${seen:+$seen,}${c}"
+    if curl -fsSL "https://download.docker.com/linux/debian/dists/${c}/Release" >/dev/null 2>&1; then
+      chosen="$c"
+      break
+    fi
+  done
+
+  if [[ -z "$chosen" ]]; then
+    chosen="bookworm"
+  fi
+  printf '%s' "$chosen"
+}
+
+install_docker_engine() {
+  local codename arch docker_list
+
+  if [[ -n "$(resolve_docker_bin)" ]]; then
+    return 0
+  fi
+
+  echo "Installing Docker Engine (Docker upstream repo)"
+  # https://docs.docker.com/engine/install/debian/
+
+  docker_list="/etc/apt/sources.list.d/docker.list"
+
+  # Remove potentially conflicting distro packages (best-effort).
+  apt-get remove -y docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc >/dev/null 2>&1 || true
+
+  install -m 0755 -d /etc/apt/keyrings
+  if ! curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc; then
+    echo "WARNING: Failed to download Docker GPG key." >&2
+    return 1
+  fi
+  chmod a+r /etc/apt/keyrings/docker.asc
+
+  codename="$(select_docker_repo_codename)"
+  echo "Docker repo codename: ${codename}"
+
+  arch="$(dpkg --print-architecture)"
+  echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${codename} stable" \
+    > "$docker_list"
+
+  if ! apt-get update -y; then
+    echo "WARNING: Docker upstream apt repo update failed." >&2
+    rm -f "$docker_list" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  if ! apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    echo "WARNING: Docker upstream packages failed to install." >&2
+    rm -f "$docker_list" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  if [[ -z "$(resolve_docker_bin)" ]]; then
+    echo "WARNING: Docker installed but docker binary is still missing." >&2
+    return 1
+  fi
+}
+
+echo "[2/10] Install Docker Engine"
+if ! install_docker_engine; then
+  echo "WARNING: Docker upstream install failed; falling back to distro packages." >&2
+  rm -f /etc/apt/sources.list.d/docker.list >/dev/null 2>&1 || true
+  apt-get update -y
+  apt-get install -y --no-install-recommends docker.io
+fi
+DOCKER_BIN="$(resolve_docker_bin)"
+if [[ -z "$DOCKER_BIN" ]]; then
+  echo "ERROR: docker is still missing after install attempts." >&2
+  dpkg -l | grep -E '^(ii|hi)[[:space:]]+(docker|containerd|runc)' || true
+  ls -la /usr/bin/docker* /usr/local/bin/docker* /bin/docker* 2>/dev/null || true
+  exit 1
+fi
+
 # Optional tools (best-effort)
-apt-get install -y --no-install-recommends docker-compose-plugin || true
 apt-get install -y --no-install-recommends kali-tools-web || true
 
 echo "[2/10] Cloud-init defaults (preserve local login)"
@@ -324,9 +453,12 @@ SYSTEMD_COMPOSE_STOP="${SYSTEMD_COMPOSE_CMD} down"
 
 wait_for_docker() {
   local docker_bin
-  docker_bin="$(command -v docker || true)"
+  docker_bin="${DOCKER_BIN:-$(resolve_docker_bin)}"
   if [[ -z "$docker_bin" ]]; then
     echo "ERROR: docker binary not found after install." >&2
+    echo "PATH=${PATH}" >&2
+    dpkg -l | grep -E '^(ii|hi)[[:space:]]+(docker|containerd|runc)' || true
+    ls -la /usr/bin/docker* /usr/local/bin/docker* /bin/docker* 2>/dev/null || true
     return 1
   fi
 
