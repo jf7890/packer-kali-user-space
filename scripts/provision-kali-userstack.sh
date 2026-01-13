@@ -11,6 +11,105 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exec sudo -n -E bash "$0" "$@"
 fi
 
+MODE="${1:-run}"
+
+prepare_only() {
+  local prepare_userstack_src="${PREPARE_USERSTACK_SRC:-/tmp/capstone-userstack-src}"
+  local prepare_scripts_src="${PREPARE_SCRIPTS_SRC:-/tmp/capstone-scripts}"
+  local pve_cfg="${PREPARE_PVE_CFG:-/tmp/99-pve.cfg}"
+  local ssh_pub="${PACKER_SSH_PUBLIC_KEY:-${SSH_PUBLIC_KEY:-}}"
+
+  echo "[PREPARE] Stage capstone assets"
+  rm -rf /opt/capstone-userstack-src /opt/capstone-scripts
+  mkdir -p /opt/capstone-userstack-src /opt/capstone-scripts
+
+  if compgen -G "${prepare_userstack_src}/*" >/dev/null; then
+    cp -a "${prepare_userstack_src}/." /opt/capstone-userstack-src/
+  else
+    echo "WARNING: No userstack files found in ${prepare_userstack_src}" >&2
+  fi
+
+  if compgen -G "${prepare_scripts_src}/*" >/dev/null; then
+    cp -a "${prepare_scripts_src}/." /opt/capstone-scripts/
+  else
+    echo "WARNING: No scripts found in ${prepare_scripts_src}" >&2
+  fi
+
+  chmod +x /opt/capstone-scripts/*.sh 2>/dev/null || true
+
+  if [[ -f "$pve_cfg" ]]; then
+    cp "$pve_cfg" /etc/cloud/cloud.cfg.d/99-pve.cfg
+  fi
+
+  cat > /etc/systemd/system/capstone-firstboot.service <<'EOF'
+[Unit]
+Description=Capstone first boot provisioning
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/opt/capstone-scripts/provision-kali-userstack.sh
+ConditionPathExists=!/var/lib/capstone-userstack/provisioned
+
+[Service]
+Type=oneshot
+ExecStart=/opt/capstone-scripts/provision-kali-userstack.sh
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload > /dev/null 2>&1 || true
+  systemctl enable capstone-firstboot.service > /dev/null 2>&1 || true
+
+  if [[ -z "$ssh_pub" ]]; then
+    echo "ERROR: PACKER_SSH_PUBLIC_KEY is required for key-only SSH." >&2
+    exit 1
+  fi
+
+  install -d -m 0700 -o kali -g kali /home/kali/.ssh
+  printf '%s\n' "$ssh_pub" > /home/kali/.ssh/authorized_keys
+  chown kali:kali /home/kali/.ssh/authorized_keys
+  chmod 0600 /home/kali/.ssh/authorized_keys
+
+  if [[ -f /etc/ssh/sshd_config ]]; then
+    if grep -q '^#\?PermitRootLogin' /etc/ssh/sshd_config; then
+      sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+    else
+      echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
+    fi
+    if grep -q '^#\?PasswordAuthentication' /etc/ssh/sshd_config; then
+      sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+    else
+      echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+    fi
+  fi
+
+  echo "[PREPARE] SSH hardening staged (applies on next boot)."
+
+  rm -rf "$prepare_userstack_src" "$prepare_scripts_src" 2>/dev/null || true
+  rm -f /root/.ssh/authorized_keys 2>/dev/null || true
+  rm -f /etc/ssh/ssh_host_* 2>/dev/null || true
+  truncate -s 0 /etc/machine-id 2>/dev/null || true
+  rm -f /var/lib/dbus/machine-id 2>/dev/null || true
+  find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
+  rm -f /root/.bash_history /home/kali/.bash_history 2>/dev/null || true
+  rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+  sync || true
+
+  echo "[PREPARE] Done."
+}
+
+if [[ "$MODE" == "--prepare" ]]; then
+  prepare_only
+  exit 0
+fi
+
+if [[ "$MODE" != "run" && "$MODE" != "" ]]; then
+  echo "Usage: $0 [--prepare]" >&2
+  exit 1
+fi
+
 PROVISION_MARKER="/var/lib/capstone-userstack/provisioned"
 if [[ -f "$PROVISION_MARKER" ]]; then
   echo "[SKIP] Capstone provisioning already completed."
