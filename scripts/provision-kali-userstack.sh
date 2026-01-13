@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script is intended to run as root (Packer should run it via sudo/root SSH).
+# This script is intended to run as root (systemd first-boot).
 # Comments are English-only by request.
 
 export DEBIAN_FRONTEND=noninteractive
@@ -11,25 +11,45 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exec sudo -n -E bash "$0" "$@"
 fi
 
-USERSTACK_SRC="/tmp/capstone-userstack"
+PROVISION_MARKER="/var/lib/capstone-userstack/provisioned"
+if [[ -f "$PROVISION_MARKER" ]]; then
+  echo "[SKIP] Capstone provisioning already completed."
+  exit 0
+fi
+
+USERSTACK_SRC="/opt/capstone-userstack-src"
 USERSTACK_DST="/opt/capstone-userstack"
 WAZUH_MANAGER="${WAZUH_MANAGER:-172.16.99.11}"
 
-echo "[1/8] Apt update + base packages"
+echo "[1/10] Configure apt sources"
+cat > /etc/apt/sources.list <<'EOF'
+deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+# deb-src http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+EOF
+
+echo "[2/10] Apt update + base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg lsb-release jq \
+  ca-certificates curl gnupg lsb-release jq unzip \
   qemu-guest-agent \
   docker.io \
-  unzip
+  cloud-init \
+  tigervnc-standalone-server dbus-x11
+
+# Optional tools (best-effort)
+apt-get install -y --no-install-recommends docker-compose-plugin || true
+apt-get install -y --no-install-recommends kali-tools-web || true
 
 COMPOSE_BIN=""
 COMPOSE_ARGS=""
-if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
-  if apt-get install -y docker-compose-plugin; then
+if command -v docker >/dev/null 2>&1; then
+  if docker compose version >/dev/null 2>&1; then
     COMPOSE_BIN="/usr/bin/docker"
     COMPOSE_ARGS="compose"
   fi
+fi
+if [[ -z "$COMPOSE_BIN" ]] && command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_BIN="/usr/bin/docker-compose"
 fi
 if [[ -z "$COMPOSE_BIN" ]] && apt-cache show docker-compose >/dev/null 2>&1; then
   if apt-get install -y docker-compose; then
@@ -51,19 +71,65 @@ SYSTEMD_COMPOSE_CMD="${COMPOSE_CMD[*]}"
 SYSTEMD_COMPOSE_START="${SYSTEMD_COMPOSE_CMD} up -d"
 SYSTEMD_COMPOSE_STOP="${SYSTEMD_COMPOSE_CMD} down"
 
-# Start services in a non-blocking way to avoid long-running SSH sessions.
-systemctl enable qemu-guest-agent > /dev/null 2>&1 || true
-systemctl start --no-block qemu-guest-agent > /dev/null 2>&1 || true
-
-systemctl enable docker > /dev/null 2>&1 || true
-systemctl start --no-block docker > /dev/null 2>&1 || true
+echo "[3/10] Enable core services"
+systemctl enable --now qemu-guest-agent > /dev/null 2>&1 || true
+systemctl enable --now docker > /dev/null 2>&1 || true
+systemctl enable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service > /dev/null 2>&1 || true
+if command -v cloud-init >/dev/null 2>&1; then
+  cloud-init clean --logs > /dev/null 2>&1 || true
+  cloud-init init > /dev/null 2>&1 || true
+  cloud-init modules --mode=config > /dev/null 2>&1 || true
+  cloud-init modules --mode=final > /dev/null 2>&1 || true
+fi
 
 # Allow 'kali' user to run docker without sudo (if the user exists)
 if id kali >/dev/null 2>&1; then
   usermod -aG docker kali || true
 fi
 
-echo "[2/8] Install Wazuh agent (optional; does not start until manager is set)"
+echo "[4/10] Configure VNC (XFCE)"
+if command -v vncserver >/dev/null 2>&1; then
+  mkdir -p /home/kali/.vnc
+  chown kali:kali /home/kali/.vnc
+  chmod 700 /home/kali/.vnc
+
+  cat > /home/kali/.vnc/xstartup <<'EOF'
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+export SHELL=/bin/bash
+startxfce4 &
+EOF
+  chmod 755 /home/kali/.vnc/xstartup
+  chown kali:kali /home/kali/.vnc/xstartup
+
+  su - kali -c "printf \"kali1234\n\" | vncpasswd -f > ~/.vnc/passwd"
+  chmod 600 /home/kali/.vnc/passwd
+  chown kali:kali /home/kali/.vnc/passwd
+
+  cat > /etc/systemd/system/vncserver@.service <<'EOF'
+[Unit]
+Description=TigerVNC Server on display :%i
+After=network.target
+
+[Service]
+Type=forking
+User=kali
+PAMName=login
+PIDFile=/home/kali/.vnc/%H:%i.pid
+ExecStartPre=-/usr/bin/vncserver -kill :%i > /dev/null 2>&1
+ExecStart=/usr/bin/vncserver :%i -geometry 1280x800 -depth 24 -localhost no
+ExecStop=/usr/bin/vncserver -kill :%i
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload > /dev/null 2>&1 || true
+  systemctl enable vncserver@1.service > /dev/null 2>&1 || true
+fi
+
+echo "[5/10] Install Wazuh agent (optional; does not start until manager is set)"
 # Wazuh provides a Debian/Ubuntu repo that also works for Kali (Debian-based).
 # If external downloads are blocked, the install is skipped.
 if ! dpkg -s wazuh-agent >/dev/null 2>&1; then
@@ -97,7 +163,7 @@ fi
 systemctl stop wazuh-agent > /dev/null 2>&1 || true
 systemctl disable wazuh-agent > /dev/null 2>&1 || true
 
-echo "[3/8] Helper: set Wazuh manager address later"
+echo "[6/10] Helper: set Wazuh manager address later"
 cat > /usr/local/bin/wazuh-set-manager <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -143,9 +209,10 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload > /dev/null 2>&1 || true
   systemctl enable capstone-wazuh-manager.service > /dev/null 2>&1 || true
+  /usr/local/bin/wazuh-set-manager "${WAZUH_MANAGER}" || true
 fi
 
-echo "[4/8] Install capstone userstack files"
+echo "[7/10] Install capstone userstack files"
 rm -rf "$USERSTACK_DST"
 mkdir -p "$USERSTACK_DST"
 if compgen -G "$USERSTACK_SRC/*" >/dev/null; then
@@ -170,7 +237,7 @@ fi
 
 chmod +x "$USERSTACK_DST/scripts"/*.sh 2>/dev/null || true
 
-echo "[5/8] Create systemd service: capstone-userstack"
+echo "[8/10] Create systemd service: capstone-userstack"
 cat > /etc/systemd/system/capstone-userstack.service <<EOF
 [Unit]
 Description=Capstone user lab stack (DVWA + JuiceShop + nginx-love)
@@ -192,49 +259,22 @@ EOF
 systemctl daemon-reload > /dev/null 2>&1 || true
 systemctl enable capstone-userstack.service > /dev/null 2>&1 || true
 
-echo "[6/8] Pre-pull/build docker images (best-effort)"
-# Avoid failing the whole template build if a registry is down.
+echo "[9/10] Pre-pull/build docker images (best-effort)"
+# Avoid failing the whole provisioning if a registry is down.
 (
   cd "$USERSTACK_DST"
   "${COMPOSE_CMD[@]}" pull || true
   "${COMPOSE_CMD[@]}" build --pull || true
 ) || true
 
-# Do not start the lab automatically during the template build
-systemctl stop capstone-userstack.service > /dev/null 2>&1 || true
+systemctl start --no-block capstone-userstack.service > /dev/null 2>&1 || true
 
-echo "[7/8] Cleanup temporary build artifacts"
-rm -rf /tmp/capstone-userstack /tmp/scripts >/dev/null 2>&1 || true
-apt-get autoremove -y >/dev/null 2>&1 || true
-apt-get clean >/dev/null 2>&1 || true
+echo "[10/10] Finalize"
+apt-get autoremove -y > /dev/null 2>&1 || true
+apt-get clean > /dev/null 2>&1 || true
+rm -rf /var/lib/apt/lists/* >/dev/null 2>&1 || true
+mkdir -p "$(dirname "$PROVISION_MARKER")"
+touch "$PROVISION_MARKER"
+systemctl disable capstone-firstboot.service > /dev/null 2>&1 || true
 
-echo "[8/8] Template cleanup (logs/keys/identity)"
-
-# Remove build-time SSH keys (template should not ship with provisioning keys)
-rm -f /root/.ssh/authorized_keys 2>/dev/null || true
-rm -f /home/kali/.ssh/authorized_keys 2>/dev/null || true
-
-# NOTE: Only enable these if clones will receive SSH keys via Cloud-Init/Proxmox.
-# passwd -l root >/dev/null 2>&1 || true
-# passwd -l kali >/dev/null 2>&1 || true
-
-# Reset SSH host keys so clones regenerate unique keys on first boot
-rm -f /etc/ssh/ssh_host_* 2>/dev/null || true
-
-# Reset machine-id to avoid duplicate identities across clones
-truncate -s 0 /etc/machine-id 2>/dev/null || true
-rm -f /var/lib/dbus/machine-id 2>/dev/null || true
-
-# Clear logs to reduce template size and remove build traces
-find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
-
-# Clean shell history
-rm -f /root/.bash_history 2>/dev/null || true
-rm -f /home/kali/.bash_history 2>/dev/null || true
-
-# Remove apt lists (optional; reduces template size)
-rm -rf /var/lib/apt/lists/* 2>/dev/null || true
-
-sync || true
-
-echo "DONE: Template has docker + userstack + wazuh-agent (disabled until manager is set)."
+echo "DONE: userstack provisioned (docker + wazuh + nginx-love)."
