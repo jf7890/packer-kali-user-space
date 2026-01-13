@@ -13,6 +13,22 @@ fi
 
 MODE="${1:-run}"
 
+if [[ "$MODE" != "--prepare" ]]; then
+  LOG_FILE="/var/log/capstone-userstack-provision.log"
+  mkdir -p /var/log
+  if command -v tee >/dev/null 2>&1; then
+    exec > >(tee -a "$LOG_FILE") 2>&1
+  else
+    exec >>"$LOG_FILE" 2>&1
+  fi
+  echo "=== $(date -Is) Starting capstone provisioning ==="
+  echo "Log file: ${LOG_FILE}"
+fi
+
+if [[ "${CAPSTONE_DEBUG:-}" == "1" ]]; then
+  set -x
+fi
+
 prepare_only() {
   local prepare_userstack_src="${PREPARE_USERSTACK_SRC:-/tmp/capstone-userstack-src}"
   local prepare_scripts_src="${PREPARE_SCRIPTS_SRC:-/tmp/capstone-scripts}"
@@ -139,46 +155,106 @@ apt-get install -y --no-install-recommends \
 apt-get install -y --no-install-recommends docker-compose-plugin || true
 apt-get install -y --no-install-recommends kali-tools-web || true
 
-COMPOSE_BIN=""
-COMPOSE_ARGS=""
-if command -v docker >/dev/null 2>&1; then
-  if docker compose version >/dev/null 2>&1; then
-    COMPOSE_BIN="/usr/bin/docker"
-    COMPOSE_ARGS="compose"
+resolve_compose_cmd() {
+  local docker_bin docker_compose_bin
+  docker_bin="$(command -v docker || true)"
+  if [[ -n "$docker_bin" ]] && "$docker_bin" compose version >/dev/null 2>&1; then
+    COMPOSE_CMD=("$docker_bin" "compose")
+    return 0
   fi
-fi
-if [[ -z "$COMPOSE_BIN" ]] && command -v docker-compose >/dev/null 2>&1; then
-  COMPOSE_BIN="/usr/bin/docker-compose"
-fi
-if [[ -z "$COMPOSE_BIN" ]] && apt-cache show docker-compose >/dev/null 2>&1; then
-  if apt-get install -y docker-compose; then
-    COMPOSE_BIN="/usr/bin/docker-compose"
-  fi
-fi
-if [[ -z "$COMPOSE_BIN" ]]; then
-  echo "ERROR: No docker compose package available in apt repos." >&2
-  exit 1
-fi
 
-if [[ -n "$COMPOSE_ARGS" ]]; then
-  COMPOSE_CMD=("$COMPOSE_BIN" "$COMPOSE_ARGS")
-else
-  COMPOSE_CMD=("$COMPOSE_BIN")
+  docker_compose_bin="$(command -v docker-compose || true)"
+  if [[ -n "$docker_compose_bin" ]]; then
+    COMPOSE_CMD=("$docker_compose_bin")
+    return 0
+  fi
+
+  return 1
+}
+
+install_compose_from_apt() {
+  apt-get install -y --no-install-recommends docker-compose-plugin || true
+  apt-get install -y --no-install-recommends docker-compose || true
+}
+
+install_compose_from_github() {
+  local arch version url plugin_dir plugin_path
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    armv7l) arch="armv7" ;;
+    *) echo "Unsupported architecture for docker compose: ${arch}" >&2; return 1 ;;
+  esac
+
+  version="$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest | jq -r '.tag_name' 2>/dev/null || true)"
+  if [[ -z "$version" || "$version" == "null" ]]; then
+    version="v2.27.1"
+  fi
+
+  url="https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${arch}"
+  plugin_dir="/usr/local/lib/docker/cli-plugins"
+  plugin_path="${plugin_dir}/docker-compose"
+
+  mkdir -p "$plugin_dir"
+  curl -fsSL "$url" -o "$plugin_path"
+  chmod +x "$plugin_path"
+  ln -sf "$plugin_path" /usr/local/bin/docker-compose
+}
+
+if ! resolve_compose_cmd; then
+  install_compose_from_apt
+fi
+if ! resolve_compose_cmd; then
+  echo "docker compose not found in apt; installing from GitHub releases (best-effort)"
+  if ! install_compose_from_github; then
+    echo "WARNING: Failed to install docker compose from GitHub; continuing." >&2
+  fi
+fi
+if ! resolve_compose_cmd; then
+  echo "ERROR: docker compose is required but could not be installed." >&2
+  exit 1
 fi
 
 SYSTEMD_COMPOSE_CMD="${COMPOSE_CMD[*]}"
 SYSTEMD_COMPOSE_START="${SYSTEMD_COMPOSE_CMD} up -d"
 SYSTEMD_COMPOSE_STOP="${SYSTEMD_COMPOSE_CMD} down"
 
+wait_for_docker() {
+  local docker_bin
+  docker_bin="$(command -v docker || true)"
+  if [[ -z "$docker_bin" ]]; then
+    echo "ERROR: docker binary not found after install." >&2
+    return 1
+  fi
+
+  for _ in {1..60}; do
+    if "$docker_bin" info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "ERROR: Docker daemon is not ready (docker info failed)." >&2
+  "$docker_bin" info || true
+  return 1
+}
+
 echo "[3/10] Enable core services"
 systemctl enable --now qemu-guest-agent > /dev/null 2>&1 || true
 systemctl enable --now docker > /dev/null 2>&1 || true
-systemctl enable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service > /dev/null 2>&1 || true
+wait_for_docker
 if command -v cloud-init >/dev/null 2>&1; then
-  cloud-init clean --logs > /dev/null 2>&1 || true
-  cloud-init init > /dev/null 2>&1 || true
-  cloud-init modules --mode=config > /dev/null 2>&1 || true
-  cloud-init modules --mode=final > /dev/null 2>&1 || true
+  systemctl enable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service > /dev/null 2>&1 || true
+  if [[ "${CAPSTONE_RUN_CLOUD_INIT:-}" == "1" ]]; then
+    echo "Running cloud-init manually (CAPSTONE_RUN_CLOUD_INIT=1)"
+    cloud-init clean --logs > /dev/null 2>&1 || true
+    cloud-init init > /dev/null 2>&1 || true
+    cloud-init modules --mode=config > /dev/null 2>&1 || true
+    cloud-init modules --mode=final > /dev/null 2>&1 || true
+  else
+    echo "Skipping manual cloud-init run (set CAPSTONE_RUN_CLOUD_INIT=1 to force)."
+  fi
 fi
 
 # Allow 'kali' user to run docker without sudo (if the user exists)
@@ -314,10 +390,14 @@ fi
 echo "[7/10] Install capstone userstack files"
 rm -rf "$USERSTACK_DST"
 mkdir -p "$USERSTACK_DST"
-if compgen -G "$USERSTACK_SRC/*" >/dev/null; then
-  cp -a "$USERSTACK_SRC"/* "$USERSTACK_DST"/
-else
-  echo "WARNING: No userstack files found in $USERSTACK_SRC" >&2
+if [[ ! -d "$USERSTACK_SRC" ]]; then
+  echo "ERROR: Userstack source directory missing: $USERSTACK_SRC" >&2
+  exit 1
+fi
+cp -a "$USERSTACK_SRC"/. "$USERSTACK_DST"/
+if [[ ! -f "$USERSTACK_DST/docker-compose.yml" ]]; then
+  echo "ERROR: Missing $USERSTACK_DST/docker-compose.yml (userstack assets were not staged)." >&2
+  exit 1
 fi
 
 # Ensure log directories exist
@@ -341,12 +421,14 @@ cat > /etc/systemd/system/capstone-userstack.service <<EOF
 [Unit]
 Description=Capstone user lab stack (DVWA + JuiceShop + nginx-love)
 Wants=network-online.target docker.service
+Requires=docker.service
 After=network-online.target docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/capstone-userstack
+ExecStartPre=/bin/bash -lc 'for _ in {1..60}; do [ -S /var/run/docker.sock ] && exit 0; sleep 1; done; echo "docker.sock not ready" >&2; exit 1'
 ExecStart=${SYSTEMD_COMPOSE_START}
 ExecStop=${SYSTEMD_COMPOSE_STOP}
 TimeoutStartSec=0
@@ -366,7 +448,17 @@ echo "[9/10] Pre-pull/build docker images (best-effort)"
   "${COMPOSE_CMD[@]}" build --pull || true
 ) || true
 
-systemctl start --no-block capstone-userstack.service > /dev/null 2>&1 || true
+echo "[9/10] Start userstack"
+systemctl start capstone-userstack.service
+systemctl is-active --quiet capstone-userstack.service
+
+for name in dvwa juiceshop nginx-love-backend nginx-love-frontend; do
+  if ! docker ps --format '{{.Names}}' | grep -qx "$name"; then
+    echo "ERROR: Expected container is not running: ${name}" >&2
+    docker ps -a || true
+    exit 1
+  fi
+done
 
 echo "[10/10] Finalize"
 apt-get autoremove -y > /dev/null 2>&1 || true
