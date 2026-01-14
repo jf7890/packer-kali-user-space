@@ -2,6 +2,7 @@ proxmox_skip_tls_verify = true
 
 vm_storage      = "local-lvm"
 proxmox_storage = "local-lvm"
+iso_storage     = "hdd-data"
 
 template_vm_id       = 0
 template_name        = "tpl-kali-xfce"
@@ -11,7 +12,6 @@ cores              = 4
 memory             = 6144
 ballooning_minimum = 0
 disk_size          = "30G"
-iso_storage = "hdd-data"
 
 # Kali ISO (Installer amd64) + checksum
 kali_iso_url             = "https://cdimage.kali.org/kali-2025.4/kali-linux-2025.4-installer-amd64.iso"
