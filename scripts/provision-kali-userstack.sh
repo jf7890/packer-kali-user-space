@@ -18,9 +18,12 @@ apt-get update -y
 echo "[2/11] Install Cloud-init, VNC & tools"
 # Cài thêm các gói thiếu vì không cài trong Preseed
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg jq unzip \
+  ca-certificates curl gnupg jq unzip npm \
   cloud-init tigervnc-standalone-server tigervnc-common tigervnc-tools dbus-x11 \
-  kali-tools-web
+  git \
+  nmap \
+  sqlmap \
+  nikto
 
 # Enable cloud-init units that exist
 for svc in cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service; do
@@ -153,6 +156,8 @@ chmod +x "$USERSTACK_DST/scripts"/*.sh || true
 if [[ -d "$USERSTACK_DST/nginx-love/scripts" ]]; then
   chmod +x "$USERSTACK_DST/nginx-love/scripts"/*.sh || true
 fi
+# Normalize line endings for shell scripts to avoid CRLF issues
+find "$USERSTACK_DST" -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 
 echo "[7/11] Deploy nginx-love"
 if [[ ! -f "$USERSTACK_DST/nginx-love/scripts/deploy.sh" ]]; then
