@@ -96,6 +96,11 @@ variable "kali_iso_url" {
   type = string
 }
 
+variable "kali_iso_file" {
+  type    = string
+  default = ""
+}
+
 variable "kali_iso_checksum" {
   type    = string
   default = "none"

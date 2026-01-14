@@ -27,10 +27,12 @@ source "proxmox-iso" "kali-xfce" {
   boot_iso {
     type = "scsi"
 
-    iso_url          = var.kali_iso_url
-    iso_checksum     = var.kali_iso_checksum
-    iso_storage_pool = var.iso_storage
-    iso_download_pve = var.iso_download_pve
+    # Use an existing ISO on Proxmox if provided, otherwise download it.
+    iso_file         = var.kali_iso_file != "" ? var.kali_iso_file : null
+    iso_url          = var.kali_iso_file == "" ? var.kali_iso_url : null
+    iso_checksum     = var.kali_iso_file == "" ? var.kali_iso_checksum : null
+    iso_storage_pool = var.kali_iso_file == "" ? var.iso_storage : null
+    iso_download_pve = var.kali_iso_file == "" ? var.iso_download_pve : null
     unmount          = true
   }
 
