@@ -26,7 +26,8 @@ variable "proxmox_skip_tls_verify" {
 
 variable "iso_storage" {
   type = string
-  default = env("PACKER_ISO_STORAGE")
+  # Prefer ISO_STORAGE (matches note.txt), fall back to legacy PACKER_ISO_STORAGE
+  default = env("ISO_STORAGE") != "" ? env("ISO_STORAGE") : env("PACKER_ISO_STORAGE")
 }
 
 variable "vm_storage" {
@@ -39,7 +40,8 @@ variable "proxmox_storage" {
 
 variable "bridge_lan" {
   type    = string
-  default = env("PACKER_BRIDGE_LAN")
+  # Prefer BRIDGE_LAN (matches note.txt), fall back to legacy PACKER_BRIDGE_LAN
+  default = env("BRIDGE_LAN") != "" ? env("BRIDGE_LAN") : env("PACKER_BRIDGE_LAN")
 }
 
 variable "lan_vlan_tag" {
