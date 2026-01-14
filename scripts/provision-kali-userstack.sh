@@ -40,8 +40,14 @@ apt-get install -y --no-install-recommends \
 
 systemctl enable --now docker
 
-# Fix Cloud-init services
-systemctl enable cloud-init-local cloud-init config cloud-final
+# Fix Cloud-init services (only enable those that exist)
+for svc in cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service; do
+  if systemctl list-unit-files | awk '{print $1}' | grep -qx "$svc"; then
+    systemctl enable "$svc"
+  else
+    echo "Skipping enable $svc (unit not found)"
+  fi
+done
 
 # Allow 'kali' user to run docker
 if id kali >/dev/null 2>&1; then
