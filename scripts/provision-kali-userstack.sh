@@ -30,6 +30,9 @@ echo "[2.1/11] Ensure kali login password"
 if id kali >/dev/null 2>&1; then
   echo "kali:kali" | chpasswd
   passwd -u kali || true
+  if [[ -d /home/kali ]]; then
+    chown -R kali:kali /home/kali
+  fi
 else
   echo "Skipping password reset (user kali not found)"
 fi
