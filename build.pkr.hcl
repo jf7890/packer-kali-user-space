@@ -3,6 +3,7 @@ build {
   name    = "kali"
   sources = ["source.proxmox-iso.kali-xfce"]
 
+
   # Proxmox cloud-init tweaks
   provisioner "file" {
     source      = "files/99-pve.cfg"
