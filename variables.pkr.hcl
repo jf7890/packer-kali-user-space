@@ -101,6 +101,11 @@ variable "kali_iso_checksum" {
   default = "none"
 }
 
+variable "iso_download_pve" {
+  type    = bool
+  default = true
+}
+
 variable "task_timeout" {
   type    = string
   default = "2h"

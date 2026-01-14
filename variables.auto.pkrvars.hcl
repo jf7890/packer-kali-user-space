@@ -18,3 +18,6 @@ kali_iso_checksum        = "sha256:3b4a3a9f5fb6532635800d3eda94414fb69a44165af6d
 
 lan_vlan_tag = 10
 task_timeout = "2h"
+
+# Let Packer download the ISO and upload it to Proxmox (avoids relying on node Internet access)
+iso_download_pve = false

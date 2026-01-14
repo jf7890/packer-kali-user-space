@@ -30,7 +30,7 @@ source "proxmox-iso" "kali-xfce" {
     iso_url          = var.kali_iso_url
     iso_checksum     = var.kali_iso_checksum
     iso_storage_pool = var.iso_storage
-    iso_download_pve = true
+    iso_download_pve = var.iso_download_pve
     unmount          = true
   }
 
