@@ -22,11 +22,6 @@ variable "proxmox_node" {
   default = env("PROXMOX_NODE")
 }
 
-variable "proxmox_skip_tls_verify" {
-  type    = bool
-  default = true
-}
-
 variable "iso_storage" {
   type = string
   default = env("PACKER_ISO_STORAGE")
@@ -57,50 +52,9 @@ variable "ssh_public_key" {
 
 variable "ssh_private_key_file" {
   type    = string
-  default = env("PACKER_SSH_PRIVATE_KEY")
+  default = env("PACKER_SSH_PRIVATE_KEY_FILE")
 }
 
-variable "template_vm_id" {
-  type = number
-}
-
-variable "template_name" {
-  type = string
-}
-
-variable "template_description" {
-  type    = string
-  default = "Kali XFCE (Capstone)"
-}
-
-variable "cores" {
-  type    = number
-  default = 2
-}
-
-variable "memory" {
-  type    = number
-  default = 4096
-}
-
-variable "ballooning_minimum" {
-  type    = number
-  default = 0
-}
-
-variable "disk_size" {
-  type    = string
-  default = "30G"
-}
-
-variable "kali_iso_url" {
-  type = string
-}
-
-variable "kali_iso_checksum" {
-  type    = string
-  default = "none"
-}
 
 variable "task_timeout" {
   type    = string
