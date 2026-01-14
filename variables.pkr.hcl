@@ -29,6 +29,11 @@ variable "iso_storage" {
   default = env("PACKER_ISO_STORAGE")
 }
 
+variable "kali_iso_file" {
+  type    = string
+  default = ""
+}
+
 variable "vm_storage" {
   type = string
 }
