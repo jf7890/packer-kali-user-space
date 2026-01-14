@@ -7,8 +7,7 @@ USERSTACK_SRC="/tmp/capstone-userstack"
 USERSTACK_DST="/opt/capstone-userstack"
 export DEBIAN_FRONTEND=noninteractive
 
-echo "[1/9] Fix Sources List & Update"
-# Vì tắt mirror trong preseed, ta phải thêm lại repo online để cài gói mới
+echo "[1/11] Fix Sources List & Update"
 cat > /etc/apt/sources.list <<EOF
 deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
 # deb-src http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
@@ -16,31 +15,12 @@ EOF
 
 apt-get update -y
 
-echo "[2/9] Install Cloud-init, VNC & Docker"
+echo "[2/11] Install Cloud-init, VNC & tools"
 # Cài thêm các gói thiếu vì không cài trong Preseed
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg jq unzip \
   cloud-init tigervnc-standalone-server tigervnc-common tigervnc-tools dbus-x11 \
   kali-tools-web
-
-# Docker CE theo hướng dẫn chính thức (Debian/Kali)
-# Kali reports VERSION_CODENAME=kali-rolling; Docker repo follows Debian codenames.
-DOCKER_CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
-if [[ "$DOCKER_CODENAME" == "kali-rolling" ]]; then
-  DOCKER_CODENAME="bookworm"
-fi
-
-apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc || true
-
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${DOCKER_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
-apt-get update -y
-apt-get install -y --no-install-recommends \
-  docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-systemctl enable --now docker
 
 # Enable cloud-init units that exist
 for svc in cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service; do
@@ -51,12 +31,17 @@ for svc in cloud-init-local.service cloud-init.service cloud-config.service clou
   fi
 done
 
-# Allow 'kali' user to run docker
-if id kali >/dev/null 2>&1; then
-  usermod -aG docker kali || true
+if command -v docker >/dev/null 2>&1; then
+  systemctl enable --now docker
+  # Allow 'kali' user to run docker
+  if id kali >/dev/null 2>&1; then
+    usermod -aG docker kali || true
+  fi
+else
+  echo "Skipping docker enable (docker not installed)"
 fi
 
-echo "[3/9] Configure VNC (XFCE)"
+echo "[3/11] Configure VNC (XFCE)"
 if ! id kali >/dev/null 2>&1; then
   echo "Skipping VNC setup (user kali not found)"
 elif ! command -v vncpasswd >/dev/null 2>&1 || ! command -v vncserver >/dev/null 2>&1; then
@@ -101,7 +86,7 @@ EOF
   systemctl enable vncserver@1.service
 fi
 
-echo "[4/9] Install Wazuh agent"
+echo "[4/11] Install Wazuh agent"
 if ! dpkg -s wazuh-agent >/dev/null 2>&1; then
   curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
   echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list
@@ -122,7 +107,7 @@ fi
 systemctl stop wazuh-agent || true
 systemctl disable wazuh-agent || true
 
-echo "[5/9] Helper: set Wazuh manager IP later"
+echo "[5/11] Helper: set Wazuh manager IP later"
 cat > /usr/local/bin/wazuh-set-manager <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -143,7 +128,7 @@ systemctl status wazuh-agent --no-pager
 EOF
 chmod +x /usr/local/bin/wazuh-set-manager
 
-echo "[6/9] Install capstone userstack files"
+echo "[6/11] Install capstone userstack files"
 if [[ ! -d "$USERSTACK_SRC" ]]; then
   echo "Missing $USERSTACK_SRC" >&2
   exit 1
@@ -165,8 +150,18 @@ if [[ -f "$USERSTACK_DST/.env.example" && ! -f "$USERSTACK_DST/.env" ]]; then
 fi
 
 chmod +x "$USERSTACK_DST/scripts"/*.sh || true
+if [[ -d "$USERSTACK_DST/nginx-love/scripts" ]]; then
+  chmod +x "$USERSTACK_DST/nginx-love/scripts"/*.sh || true
+fi
 
-echo "[7/9] Create systemd service: capstone-userstack"
+echo "[7/11] Deploy nginx-love"
+if [[ ! -f "$USERSTACK_DST/nginx-love/scripts/deploy.sh" ]]; then
+  echo "Missing $USERSTACK_DST/nginx-love/scripts/deploy.sh" >&2
+  exit 1
+fi
+bash "$USERSTACK_DST/nginx-love/scripts/deploy.sh"
+
+echo "[8/11] Create systemd service: capstone-userstack"
 cat > /etc/systemd/system/capstone-userstack.service <<'EOF'
 [Unit]
 Description=Capstone user lab stack (DVWA + JuiceShop + nginx-love)
@@ -188,15 +183,64 @@ EOF
 systemctl daemon-reload
 systemctl enable capstone-userstack.service
 
-echo "[8/9] Pre-pull/build docker images"
-(
-  cd "$USERSTACK_DST"
-  docker compose pull || true
-  docker compose build --pull || true
-) || true
-systemctl stop capstone-userstack.service || true
+echo "[9/11] Create systemd service: nginx-love-start"
+cat > /usr/local/bin/nginx-love-start <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "[9/9] Optional: inject SSH public key"
+start_if_exists() {
+  local svc="$1"
+  if systemctl list-unit-files "$svc" --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$svc"; then
+    systemctl start "$svc"
+  else
+    echo "Skipping start $svc (unit not found)"
+  fi
+}
+
+if systemctl list-unit-files docker.service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx docker.service; then
+  systemctl start docker.service
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  docker start nginx-love-postgres >/dev/null 2>&1 || true
+fi
+
+start_if_exists nginx-love-backend.service
+start_if_exists nginx-love-frontend.service
+start_if_exists nginx.service
+EOF
+chmod +x /usr/local/bin/nginx-love-start
+
+cat > /etc/systemd/system/nginx-love-start.service <<'EOF'
+[Unit]
+Description=Ensure nginx-love services are running
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nginx-love-start
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable nginx-love-start.service
+
+echo "[10/11] Pre-pull/build docker images"
+if command -v docker >/dev/null 2>&1; then
+  (
+    cd "$USERSTACK_DST"
+    docker compose pull || true
+    docker compose build --pull || true
+  ) || true
+  systemctl stop capstone-userstack.service || true
+else
+  echo "Skipping docker compose pre-pull (docker not installed)"
+fi
+
+echo "[11/11] Optional: inject SSH public key"
 if [[ -n "${PACKER_SSH_PUBLIC_KEY:-}" && -d /home/kali ]]; then
   install -d -m 0700 -o kali -g kali /home/kali/.ssh
   echo "$PACKER_SSH_PUBLIC_KEY" > /home/kali/.ssh/authorized_keys

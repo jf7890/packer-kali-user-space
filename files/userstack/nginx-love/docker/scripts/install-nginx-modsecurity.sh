@@ -67,8 +67,6 @@ apt-get install -y \
     libssl-dev \
     libgd-dev \
     libgeoip-dev \
-    libxml2 \
-    libxml2-dev \
     libyajl-dev \
     liblmdb-dev \
     libcurl4-openssl-dev \
