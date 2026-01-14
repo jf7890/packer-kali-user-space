@@ -1,4 +1,5 @@
 proxmox_skip_tls_verify = true
+proxmox_username="root@pam!packer"
 
 vm_storage      = "local-lvm"
 proxmox_storage = "local-lvm"
