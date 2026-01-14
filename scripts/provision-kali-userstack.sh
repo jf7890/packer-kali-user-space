@@ -19,8 +19,8 @@ apt-get update -y
 echo "[2/9] Install Cloud-init, VNC & Docker"
 # Cài thêm các gói thiếu vì không cài trong Preseed
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg lsb-release jq unzip \
-  cloud-init tigervnc-standalone-server dbus-x11 \
+  ca-certificates curl gnupg jq unzip \
+  cloud-init tigervnc-standalone-server tigervnc-common dbus-x11 \
   kali-tools-web
 
 # Docker CE theo hướng dẫn chính thức (Debian/Kali)
@@ -29,6 +29,8 @@ DOCKER_CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME}")"
 if [[ "$DOCKER_CODENAME" == "kali-rolling" ]]; then
   DOCKER_CODENAME="bookworm"
 fi
+
+apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc || true
 
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -40,9 +42,9 @@ apt-get install -y --no-install-recommends \
 
 systemctl enable --now docker
 
-# Fix Cloud-init services (only enable those that exist)
+# Enable cloud-init units that exist
 for svc in cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service; do
-  if systemctl list-unit-files | awk '{print $1}' | grep -qx "$svc"; then
+  if systemctl list-unit-files "$svc" --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$svc"; then
     systemctl enable "$svc"
   else
     echo "Skipping enable $svc (unit not found)"
@@ -141,9 +143,13 @@ EOF
 chmod +x /usr/local/bin/wazuh-set-manager
 
 echo "[6/9] Install capstone userstack files"
+if [[ ! -d "$USERSTACK_SRC" ]]; then
+  echo "Missing $USERSTACK_SRC" >&2
+  exit 1
+fi
 rm -rf "$USERSTACK_DST"
 mkdir -p "$USERSTACK_DST"
-cp -a "$USERSTACK_SRC"/* "$USERSTACK_DST"/
+cp -a "$USERSTACK_SRC"/. "$USERSTACK_DST"/
 
 mkdir -p \
   "$USERSTACK_DST/logs/nginx" \
@@ -201,3 +207,4 @@ echo "[DONE] Cleanup"
 rm -rf /tmp/capstone-userstack /tmp/scripts || true
 apt-get autoremove -y || true
 apt-get clean
+rm -rf /var/lib/apt/lists/* || true
