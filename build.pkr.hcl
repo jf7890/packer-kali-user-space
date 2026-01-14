@@ -19,9 +19,20 @@ build {
     destination = "/tmp/capstone-userstack"
   }
 
+  provisioner "shell" {
+    inline = ["mkdir -p /tmp/scripts"]
+  }
+
   provisioner "file" {
     source      = "scripts/"
-    destination = "/tmp/scripts"
+    destination = "/tmp/scripts/"
+  }
+
+  provisioner "shell" {
+    inline = [
+      "sudo chmod +x /tmp/scripts/provision-kali-userstack.sh",
+      "cd /tmp/scripts && sudo -E bash ./provision-kali-userstack.sh"
+    ]
   }
 
   provisioner "shell" {
