@@ -2,8 +2,8 @@ export PROXMOX_URL="https://10.10.100.1:8006/api2/json"
 export PROXMOX_USERNAME="root@pam!packer"
 export PROXMOX_TOKEN="28786dd2-1eed-44e6-b8a4-dc2221ce384d"
 export PROXMOX_NODE="homelab"
-export ISO_STORAGE="hdd-data"
-export BRIDGE_LAN="nonet"
+export PACKER_ISO_STORAGE="hdd-data"
+export PACKER_BRIDGE_LAN="nonet"
 export SSH_PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO1ut0z46xZh4zNQjVtm65bC7EvkBUQAFfGqswaXD53n root@red-client"
 
 export SSH_PRIVATE_KEY="$(cat <<'EOF'
