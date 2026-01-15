@@ -180,6 +180,29 @@ fi
 
 chmod +x "$USERSTACK_DST/scripts"/*.sh || true
 
+if command -v systemctl >/dev/null 2>&1; then
+  cat > /etc/systemd/system/capstone-userstack-env.service <<EOF
+[Unit]
+Description=Update capstone userstack env and hosts
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=${USERSTACK_DST}/scripts/update-capstone-userstack-env.sh
+
+[Service]
+Type=oneshot
+Environment=CAPSTONE_STACK_DIR=${USERSTACK_DST}
+ExecStart=/bin/sh -c '${USERSTACK_DST}/scripts/update-capstone-userstack-env.sh >/dev/null 2>&1 || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload >/dev/null
+  systemctl enable capstone-userstack-env.service >/dev/null
+else
+  echo "Skipping capstone userstack env service (systemd not available)"
+fi
+
 echo "[7/8] Start capstone userstack (docker compose)"
 bash "$USERSTACK_DST/scripts/install-capstone-userstack-service.sh"
 
