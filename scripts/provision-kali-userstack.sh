@@ -138,41 +138,6 @@ if ! dpkg -s wazuh-agent >/dev/null 2>&1; then
   apt-get install -y wazuh-agent >/dev/null
 fi
 
-# Configure Wazuh agent config
-WAZUH_CONF="/var/ossec/etc/ossec.conf"
-USERSTACK_WAZUH_CONF="${USERSTACK_DST}/config/ossec.conf"
-if [[ -f "$USERSTACK_WAZUH_CONF" ]]; then
-  install -m 0644 "$USERSTACK_WAZUH_CONF" "$WAZUH_CONF"
-fi
-
-if [[ -n "${WAZUH_MANAGER:-}" && -f "$WAZUH_CONF" ]]; then
-  sed -i "s|<address>[^<]*</address>|<address>${WAZUH_MANAGER}</address>|" "$WAZUH_CONF" || true
-fi
-
-systemctl stop wazuh-agent >/dev/null 2>&1 || true
-systemctl disable wazuh-agent >/dev/null 2>&1 || true
-
-echo "[5/8] Helper: set Wazuh manager IP later"
-cat > /usr/local/bin/wazuh-set-manager <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -ne 1 ]]; then
-  echo "Usage: wazuh-set-manager <MANAGER_IP_OR_HOSTNAME>" >&2
-  exit 1
-fi
-mgr="$1"
-conf="/var/ossec/etc/ossec.conf"
-if [[ ! -f "$conf" ]]; then
-  echo "Cannot find $conf" >&2
-  exit 1
-fi
-sed -i "s|<address>[^<]*</address>|<address>${mgr}</address>|" "$conf"
-systemctl enable --now wazuh-agent
-systemctl restart wazuh-agent
-systemctl status wazuh-agent --no-pager
-EOF
-chmod +x /usr/local/bin/wazuh-set-manager
-
 echo "[6/8] Install capstone userstack files"
 if [[ ! -d "$USERSTACK_SRC" ]]; then
   echo "Missing $USERSTACK_SRC" >&2
@@ -194,6 +159,47 @@ if [[ -f "$USERSTACK_DST/.env.example" && ! -f "$USERSTACK_DST/.env" ]]; then
 fi
 
 chmod +x "$USERSTACK_DST/scripts"/*.sh || true
+
+echo "[6.1/8] Configure Wazuh agent auto-enroll"
+WAZUH_CONF="/var/ossec/etc/ossec.conf"
+USERSTACK_WAZUH_CONF="${USERSTACK_DST}/config/ossec.conf"
+if [[ -f "$USERSTACK_WAZUH_CONF" ]]; then
+  install -m 0644 "$USERSTACK_WAZUH_CONF" "$WAZUH_CONF"
+fi
+
+rm -f /var/ossec/etc/client.keys >/dev/null 2>&1 || true
+rm -f /usr/local/bin/wazuh-set-manager >/dev/null 2>&1 || true
+
+if command -v systemctl >/dev/null 2>&1; then
+  install -d /etc/systemd/system/wazuh-agent.service.d
+
+  cat > /etc/systemd/system/capstone-wazuh-bootstrap.service <<EOF
+[Unit]
+Description=Bootstrap Wazuh agent registration
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=${USERSTACK_DST}/scripts/bootstrap-wazuh-agent.sh
+
+[Service]
+Type=oneshot
+ExecStart=${USERSTACK_DST}/scripts/bootstrap-wazuh-agent.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  cat > /etc/systemd/system/wazuh-agent.service.d/override.conf <<EOF
+[Unit]
+Requires=capstone-wazuh-bootstrap.service
+After=capstone-wazuh-bootstrap.service
+EOF
+
+  systemctl daemon-reload >/dev/null
+  systemctl enable capstone-wazuh-bootstrap.service >/dev/null
+  systemctl enable wazuh-agent >/dev/null
+else
+  echo "Skipping Wazuh bootstrap service (systemd not available)"
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
   if systemctl list-unit-files capstone-userstack-env.service --no-legend 2>/dev/null | awk '{print $1}' | grep -qx capstone-userstack-env.service; then
