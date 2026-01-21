@@ -195,9 +195,26 @@ Requires=capstone-wazuh-bootstrap.service
 After=capstone-wazuh-bootstrap.service
 EOF
 
+  cat > /etc/systemd/system/capstone-wazuh-login.service <<EOF
+[Unit]
+Description=Write Wazuh dashboard login info
+Requires=capstone-wazuh-bootstrap.service
+After=capstone-wazuh-bootstrap.service
+ConditionPathExists=${USERSTACK_DST}/scripts/write-wazuh-login.sh
+ConditionPathExists=/var/ossec/etc/client.keys
+
+[Service]
+Type=oneshot
+ExecStart=${USERSTACK_DST}/scripts/write-wazuh-login.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   systemctl daemon-reload >/dev/null
   systemctl enable capstone-wazuh-bootstrap.service >/dev/null
   systemctl enable wazuh-agent >/dev/null
+  systemctl enable capstone-wazuh-login.service >/dev/null
 else
   echo "Skipping Wazuh bootstrap service (systemd not available)"
 fi
@@ -247,4 +264,3 @@ rm -rf /tmp/capstone-userstack /tmp/scripts || true
 apt-get autoremove -y >/dev/null 2>&1 || true
 apt-get clean >/dev/null 2>&1
 rm -rf /var/lib/apt/lists/* || true
-
