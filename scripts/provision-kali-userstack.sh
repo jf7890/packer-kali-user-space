@@ -131,7 +131,7 @@ EOF
 fi
 
 echo "[4/8] Install Wazuh agent"
-WAZUH_AGENT_REPO_VERSION="${WAZUH_AGENT_REPO_VERSION:-4.14}"
+WAZUH_AGENT_REPO_VERSION="${WAZUH_AGENT_REPO_VERSION:-4.x}"
 if ! dpkg -s wazuh-agent >/dev/null 2>&1; then
   curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH | gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
   echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/${WAZUH_AGENT_REPO_VERSION}/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list
